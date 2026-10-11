@@ -5,9 +5,7 @@ async function getInnertube() {
   if (!yt) {
     yt = await Innertube.create({
       cache: new UniversalCache(false),
-      // Allow InnerTube to fetch real visitor session data from YouTube
       generate_session_locally: false,
-      retrieve_player: true,
     });
   }
   return yt;
@@ -26,32 +24,35 @@ export default async function handler(req, res) {
   try {
     const innertube = await getInnertube();
 
-    // Use getBasicInfo with the 'IOS' or 'ANDROID' client.
-    // Mobile clients bypass web restrictions and reliably return streaming_data.
-    const info = await innertube.getBasicInfo(videoId, 'IOS');
+    // 1. Query TV_EMBEDDED first (bypasses datacenter BotGuard checks on Vercel)
+    let info = await innertube.getBasicInfo(videoId, 'TV_EMBEDDED');
 
+    // 2. Fall back to ANDROID if TV_EMBEDDED format is empty
     if (!info.streaming_data) {
-      // Fallback to default web client if mobile format fails
-      const fallbackInfo = await innertube.getBasicInfo(videoId);
-      if (!fallbackInfo.streaming_data) {
-        return res.status(404).json({ error: 'Playback stream unavailable for this video' });
-      }
-      const format = fallbackInfo.chooseFormat({ type: 'audio', quality: 'best' });
-      const streamUrl = format.decipher(innertube.session.player);
-      return res.status(200).json({ id: videoId, streamUrl });
+      info = await innertube.getBasicInfo(videoId, 'ANDROID');
     }
 
-    // Select the best audio track (Opus 160kbps or AAC 128kbps)
+    // 3. If still blocked, return YouTube's exact playability reason for debugging
+    if (!info.streaming_data) {
+      const reason = info.playability_status?.reason || 'Restricted or unavailable in datacenter region';
+      const status = info.playability_status?.status || 'UNPLAYABLE';
+      return res.status(403).json({
+        error: `Playback stream unavailable: ${reason}`,
+        status,
+      });
+    }
+
+    // Pick highest quality audio stream (Opus itag 251 or AAC itag 140)
     const format = info.chooseFormat({
       type: 'audio',
       quality: 'best',
     });
 
     if (!format) {
-      return res.status(404).json({ error: 'No compatible audio format found' });
+      return res.status(404).json({ error: 'No audio format found matching query' });
     }
 
-    // Decipher signature & n-token
+    // Decipher stream URL (or return direct URL if unencrypted)
     const streamUrl = format.decipher(innertube.session.player);
 
     return res.status(200).json({
@@ -59,6 +60,7 @@ export default async function handler(req, res) {
       streamUrl,
       bitrate: format.bitrate,
       mimeType: format.mime_type,
+      audioQuality: format.audio_quality,
     });
   } catch (error) {
     console.error('Stream error:', error);
