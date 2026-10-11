@@ -1,0 +1,8 @@
+{
+  "name": "ytm-companion-api",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "youtubei.js": "^18.1.0"
+  }
+}
